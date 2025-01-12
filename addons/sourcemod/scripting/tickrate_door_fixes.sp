@@ -6,19 +6,20 @@
 #include <sdktools>
 
 
-public Plugin myinfo = 
+public Plugin myinfo =
 {
     name        = "TickrateDoorFixes",
-    author      = "Sir, Griffin",
+    author      = "Sir, Griffin, TouchMe",
     description = "Fixes a handful of silly Tickrate bugs",
-    version     = "1.4",
+    version     = "build_0002",
     url         = "https://github.com/TouchMe-Inc/l4d2_tickrate_door_fixes"
 }
 
 
-#define ENTITY_MAX_NAME_LENGTH      64
+#define ENTITY_MAX_NAME_LENGTH      32
 
 #define MAX_EDICTS                  (1 << 11) /*< Max # of edicts in a level */
+
 
 enum
 {
@@ -27,155 +28,97 @@ enum
     DoorTypeTracked_Prop_Door_Rotating_Checkpoint = 1
 };
 
-static const char g_szDoorTypeTracked[][ENTITY_MAX_NAME_LENGTH] = 
+StringMap g_mDoorTypes = null;
+
+
+char g_szDoorTypeTracked[][ENTITY_MAX_NAME_LENGTH] =
 {
     "prop_door_rotating",
     "prop_door_rotating_checkpoint"
 };
 
-enum struct DoorsData
-{
-    int DoorsData_Type;
-    float DoorsData_Speed;
-    bool DoorsData_ForceClose;
-}
+float g_fDoorSpeedDefault[MAX_EDICTS];
 
-DoorsData g_ddDoors[MAX_EDICTS];
+ConVar g_cvDoorSpeed = null;
+float g_fTickDoorSpeed = 1.0;
 
-ConVar g_hCvarDoorSpeed = null;
-
-float g_fDoorSpeed;
 
 public void OnPluginStart()
 {
-    // Slow Doors
-    g_hCvarDoorSpeed = CreateConVar("tick_door_speed", "1.3", "Sets the speed of all prop_door entities on a map. 1.05 means = 105% speed");
-    g_hCvarDoorSpeed.AddChangeHook(Cvar_Changed);
-    g_fDoorSpeed = g_hCvarDoorSpeed.FloatValue;
-    
-    Door_ClearSettingsAll();
-    Door_GetSettingsAll();
-    Door_SetSettingsAll();
-}
+    g_cvDoorSpeed = CreateConVar("tick_door_speed", "1.3", "Sets the speed of all prop_door entities on a map. 1.3 means = 130% speed");
+    g_cvDoorSpeed.AddChangeHook(CvChange_DoorSpeed);
+    g_fTickDoorSpeed = g_cvDoorSpeed.FloatValue;
 
-public void OnPluginEnd()
-{
-    Door_ResetSettingsAll();
-}
+    g_mDoorTypes = new StringMap();
+    g_mDoorTypes.SetValue(g_szDoorTypeTracked[DoorsTypeTracked_Prop_Door_Rotating], DoorsTypeTracked_Prop_Door_Rotating);
+    g_mDoorTypes.SetValue(g_szDoorTypeTracked[DoorTypeTracked_Prop_Door_Rotating_Checkpoint], DoorTypeTracked_Prop_Door_Rotating_Checkpoint);
 
-public void OnEntityCreated(int iEntity, const char[] sClassName)
-{
-    if (sClassName[0] != 'p') {
-        return;
-    }
-    
-    for (int i = 0; i < sizeof(g_szDoorTypeTracked); i++) {
-        if (strcmp(sClassName, g_szDoorTypeTracked[i], false) != 0) {
+    char szClassname[ENTITY_MAX_NAME_LENGTH];
+
+    for (int iEntity = (MaxClients + 1); iEntity < MAX_EDICTS; iEntity++)
+    {
+        if (!IsValidEntity(iEntity)) {
             continue;
         }
-    
-        SDKHook(iEntity, SDKHook_SpawnPost, Hook_DoorSpawnPost);
+
+        GetEntityClassname(iEntity, szClassname, sizeof szClassname);
+
+        if (!g_mDoorTypes.ContainsKey(szClassname)) {
+            continue;
+        }
+
+        g_fDoorSpeedDefault[iEntity] = GetEntPropFloat(iEntity, Prop_Data, "m_flSpeed");
     }
 }
 
-void Hook_DoorSpawnPost(int iEntity)
+void CvChange_DoorSpeed(ConVar convar, const char[] szOldValue, const char[] szNewValue)
+{
+    g_fTickDoorSpeed = convar.FloatValue;
+
+    UpdateDoorSpeedAll();
+}
+
+public void OnPluginEnd() {
+    UpdateDoorSpeedAll(.bRestore = true);
+}
+
+public void OnEntityCreated(int iEntity, const char[] szClassname)
+{
+    if (!g_mDoorTypes.ContainsKey(szClassname)) {
+        return;
+    }
+
+    SDKHook(iEntity, SDKHook_SpawnPost, Hook_DoorSpawn_Post);
+}
+
+void Hook_DoorSpawn_Post(int iEntity)
 {
     if (!IsValidEntity(iEntity)) {
         return;
     }
-    
-    char sClassName[ENTITY_MAX_NAME_LENGTH];
-    GetEntityClassname(iEntity, sClassName, sizeof(sClassName));
 
-    // Save Original Settings.
-    for (int i = 0; i < sizeof(g_szDoorTypeTracked); i++) {
-        if (strcmp(sClassName, g_szDoorTypeTracked[i], false) != 0) {
+    float fDoorSpeed = GetEntPropFloat(iEntity, Prop_Data, "m_flSpeed");
+    SetEntPropFloat(iEntity, Prop_Data, "m_flSpeed", fDoorSpeed * g_fTickDoorSpeed);
+
+    g_fDoorSpeedDefault[iEntity] = fDoorSpeed;
+}
+
+void UpdateDoorSpeedAll(bool bRestore = false)
+{
+    char szClassname[ENTITY_MAX_NAME_LENGTH];
+
+    for (int iEntity = (MaxClients + 1); iEntity < MAX_EDICTS; iEntity++)
+    {
+        if (!IsValidEntity(iEntity)) {
             continue;
         }
 
-        Door_GetSettings(iEntity, i);
-    }
+        GetEntityClassname(iEntity, szClassname, sizeof szClassname);
 
-    // Set Settings.
-    Door_SetSettings(iEntity);
-}
-
-void Cvar_Changed(ConVar hConVar, const char[] sOldValue, const char[] sNewValue)
-{
-    g_fDoorSpeed = g_hCvarDoorSpeed.FloatValue;
-
-    Door_SetSettingsAll();
-}
-
-void Door_SetSettingsAll()
-{
-    int iEntity = -1;
-
-    for (int i = 0; i < sizeof(g_szDoorTypeTracked); i++) {
-        while ((iEntity = FindEntityByClassname(iEntity, g_szDoorTypeTracked[i])) != INVALID_ENT_REFERENCE) {
-            Door_SetSettings(iEntity);
-            SetEntProp(iEntity, Prop_Data, "m_bForceClosed", false);
+        if (!g_mDoorTypes.ContainsKey(szClassname)) {
+            continue;
         }
-        
-        iEntity = -1;
-    }
-}
 
-void Door_SetSettings(int iEntity)
-{
-    float fSpeed = g_ddDoors[iEntity].DoorsData_Speed * g_fDoorSpeed;
-
-    SetEntPropFloat(iEntity, Prop_Data, "m_flSpeed", fSpeed);
-}
-
-void Door_ResetSettingsAll()
-{
-    int iEntity = -1;
-
-    for (int i = 0; i < sizeof(g_szDoorTypeTracked); i++)
-    {
-        while ((iEntity = FindEntityByClassname(iEntity, g_szDoorTypeTracked[i])) != INVALID_ENT_REFERENCE) {
-            Door_ResetSettings(iEntity);
-        }
-        
-        iEntity = -1;
-    }
-}
-
-void Door_ResetSettings(int iEntity)
-{
-
-    float fSpeed = g_ddDoors[iEntity].DoorsData_Speed;
-
-    SetEntPropFloat(iEntity, Prop_Data, "m_flSpeed", fSpeed);
-}
-
-void Door_GetSettingsAll()
-{
-    int iEntity = -1;
-    
-    for (int i = 0; i < sizeof(g_szDoorTypeTracked); i++) {
-        while ((iEntity = FindEntityByClassname(iEntity, g_szDoorTypeTracked[i])) != INVALID_ENT_REFERENCE) {
-            Door_GetSettings(iEntity, i);
-        }
-        
-        iEntity = -1;
-    }
-}
-
-void Door_GetSettings(int iEntity, int iDoorType)
-{
-    g_ddDoors[iEntity].DoorsData_Type = iDoorType;
-    g_ddDoors[iEntity].DoorsData_Speed = GetEntPropFloat(iEntity, Prop_Data, "m_flSpeed");
-    g_ddDoors[iEntity].DoorsData_ForceClose = view_as<bool>(GetEntProp(iEntity, Prop_Data, "m_bForceClosed"));
-}
-
-void Door_ClearSettingsAll()
-{
-    for (int i = 0; i < MAX_EDICTS; i++)
-    {
-        g_ddDoors[i].DoorsData_Type = DoorsTypeTracked_None;
-        g_ddDoors[i].DoorsData_Speed = 0.0;
-        g_ddDoors[i].DoorsData_ForceClose = false;
+        SetEntPropFloat(iEntity, Prop_Data, "m_flSpeed", bRestore ? g_fDoorSpeedDefault[iEntity] : g_fDoorSpeedDefault[iEntity] * g_fTickDoorSpeed);
     }
 }
